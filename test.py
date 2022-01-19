@@ -159,6 +159,7 @@ class my_flight_controller(student_base):
 			self.anchor = (lat, lon)
 			print(f'Arrived at {label}')
 
+
 		#~~~~~~~~COMMAND SEQUENCE~~~~~~~~
 		setup()
 		for _ in range(len(self.fires)):
@@ -174,7 +175,7 @@ class my_flight_controller(student_base):
 if __name__ == "__main__":
 	fcs = my_flight_controller()
 	fcs.run()
-	
+
 	# a = Point(-70.9899999, 42.3599999)
 	# choose_point(a)
 
