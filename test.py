@@ -1,8 +1,12 @@
+from geopandas.tools.sjoin import _nearest_query
 from student_base import student_base
 import time
 import numpy as np
 import json
 import math
+import geopandas as gpd
+from shapely.geometry import Point, LineString, Polygon
+from shapely.ops import nearest_points
 
 class Fire:
 	def __init__(self, lats, lons):
@@ -53,10 +57,17 @@ class my_flight_controller(student_base):
 	student_run(self, telemetry: Dict, commands: Dict (optional))
 		Method that takes in telemetry and issues drone commands.
 	"""
+	#CONSTANTS
 	FIRE_MAP = 'maps/boston_fire.json'
 	ALT = 100
+	
+	#STORAGE
+	fires = []	
+	water = gpd.read_file('./data/waterbodies.geojson')['geometry']
+
+	#LOCATIONS
 	anchor = None
-	fires = []		
+	home = None 	
 	
 	def get_lon_coords(self, path):
 		"""
@@ -90,7 +101,51 @@ class my_flight_controller(student_base):
 		"""
 		return min(my_flight_controller.fires, key=lambda f: f.distance_to(pos))
 	
+	def closest_water(self, pos):
+		"""
+		Returns closest water to pos.
+		"""
+		pos = Point(*pos[::-1])
+		points = self.water.apply(lambda x: nearest_points(x,pos)[0])
+		closest_point = min(points, key=lambda x: pos.distance(x))
+		print('closest',closest_point)
+		return (closest_point.y, closest_point.x)
+
 	def student_run(self, telemetry, commands):
+		#~~~~~~~~~SETUP & MOTION~~~~~~~~~
+		def setup():
+			self.add_fires()
+			print("Printing telemetry")
+			
+			for i in range(4):
+				print(telemetry)
+				time.sleep(0.5)
+			
+			print("Waiting 6 seconds")
+			time.sleep(6)
+
+			print("Arming")
+			self.arm()
+			print("Taking off")
+			self.home = self.anchor = (telemetry['latitude'], telemetry['longitude'])
+			#print('home', self.home)
+			self.takeoff()
+
+		def tear_down():
+			move_to(self.home, 'base')
+			time.sleep(10)
+			print("Landing"), self.land()
+			
+			while telemetry['in_air']:
+				time.sleep(0.1)
+				
+			print("Landed")
+			while True:
+				lat = telemetry['latitude']
+				lon = telemetry['longitude']
+				print(f'Latitude: {lat}, Longitude: {lon}')
+				time.sleep(1)
+
 		def move_to(pos, label):
 			lat, lon = pos
 			print(f'Get to {label}')
@@ -101,50 +156,40 @@ class my_flight_controller(student_base):
 				print(f'Aircraft enroute to {label}')
 				time.sleep(10)
 				err = np.linalg.norm([lat - telemetry['latitude'], lon - telemetry['longitude']])
-			my_flight_controller.anchor = (lat, lon)
+			self.anchor = (lat, lon)
 			print(f'Arrived at {label}')
 
-
-		self.add_fires()
-		print("Printing telemetry")
-		for i in range(4):
-			print(telemetry)
-			time.sleep(0.5)
-		
-		print("Arming")
-		self.arm()
-		print("Taking off")
-		home = (telemetry['latitude'], telemetry['longitude'])
-		self.takeoff()
-		
-		print("Waiting 6 seconds")
-		time.sleep(6)
-		
-		for _ in range(len(my_flight_controller.fires)):
-			# Get water
-			move_to((42.3608, -70.9904), 'water')
+		#~~~~~~~~COMMAND SEQUENCE~~~~~~~~
+		setup()
+		for _ in range(len(self.fires)):
+			move_to(self.closest_water(self.anchor), 'water')
 			time.sleep(6)
-			# Put out fire
 			next_fire = self.closest_fire(self.anchor)
-			my_flight_controller.fires.remove(next_fire)
+			self.fires.remove(next_fire)
 			time.sleep(6)
 			move_to(next_fire.centroid, 'fire')
 			time.sleep(6)
+		tear_down()
 
-		move_to(home, 'base')
-		time.sleep(10)
-		print("Landing"), self.land()
-		
-		while telemetry['in_air']:
-			time.sleep(0.1)
-			
-		print("Landed")
-		while True:
-			lat = telemetry['latitude']
-			lon = telemetry['longitude']
-			print(f'Latitude: {lat}, Longitude: {lon}')
-			time.sleep(1)
-		
 if __name__ == "__main__":
 	fcs = my_flight_controller()
 	fcs.run()
+	
+	# a = Point(-70.9899999, 42.3599999)
+	# choose_point(a)
+
+	# print(d)
+	# print(
+	# 	nearest_points(d,a)[0]
+	# )
+	
+	# a = LineString([Point(-78.929596, 40.349718), Point(-78.934682, 40.360541), Point(-78.965688, 40.388129)])
+	# b = Point(-78.96, 40.36)
+	# print(
+	# 	nearest_points(a,b)[0]
+	# )
+	# a = shapely.geometry.LineString([shapely.geometry.Point(0,0), shapely.geometry.Point(1,0)])
+	# b = shapely.geometry.Point(0.5,1)
+
+	# print(shapely.ops.nearest_points(a,b)[0]) # POINT (0.5, 0)
+	
