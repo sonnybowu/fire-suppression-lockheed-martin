@@ -84,7 +84,10 @@ class Tour():
 			self.fires.remove(next_fire)
 			pos = next_fire.centroid
 			traversal.append((pos, 'fire'))
+			print('FIRE AREA:', next_fire.area)
+			print('PREDICTED TIME TO EXTINGUISH', next_fire.water_needed())
 		return traversal
+			
 
 class my_flight_controller(student_base):
 	"""
@@ -99,7 +102,10 @@ class my_flight_controller(student_base):
 	student_run(self, telemetry: Dict, commands: Dict (optional))
 		Method that takes in telemetry and issues drone commands.
 	"""
-	start = None
+	def __init__(self, tour):
+		super().__init__()
+		self.tour = tour
+
 	def student_run(self, telemetry, commands):			
 		#~~~~~~~~~SETUP & MOTION~~~~~~~~~
 		def setup():
@@ -132,7 +138,7 @@ class my_flight_controller(student_base):
 
 		#~~~~~~~~COMMAND SEQUENCE~~~~~~~~
 		setup()
-		execute_tour(Tour(self.start).gen_tour())
+		execute_tour(self.tour)
 		
 		print("Landing"), self.land()
 		while telemetry['in_air']:
@@ -140,6 +146,8 @@ class my_flight_controller(student_base):
 		print("Landed")
 
 if __name__ == "__main__":
-	fcs = my_flight_controller()
-	fcs.run()
+	home = (42.3594,-70.9897)
+	tour = Tour(home).gen_tour()
+	# fcs = my_flight_controller(tour)
+	# fcs.run()
 	
