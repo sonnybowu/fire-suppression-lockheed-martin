@@ -21,7 +21,7 @@ class Fire(Waypoint):
 		super().__init__(poly.centroid, self.time(), self.target_area())
 	
 	def time(self):
-		transit = 3
+		transit = 5
 		if self.poly.area >= self.target_area(): transit += math.log(self.target_area() / self.poly.area) / math.log(.95) / 5.189
 		return transit
 	
@@ -37,6 +37,7 @@ class Water(Waypoint):
 
 class GPS():
 	def __init__(self):
+		self.home = Point(-70.6185, 42.98575)
 		self.water = gpd.read_file('./data/waterbodies.geojson')['geometry']
 		self.fires = self._load_fires()
 
@@ -88,11 +89,10 @@ class Tour():
 		i = tank = 0
 		pos = tour.start
 		while(i < len(tour.path)):
-			#if tank <= 2:
 			if tank < tour.path[i].time:
 				water_pt = tour.gps.nearest_water_pt( LineString([pos, tour.path[i].coords]).centroid )
 				target = min(60, sum(map(lambda x: x.time, tour.path[i:])))
-				time_over_water = target-tank + 5
+				time_over_water = target - tank + 5
 				tank = target
 				tour.path.insert(i, Water(water_pt, time_over_water, target))
 				pos = water_pt
@@ -105,7 +105,7 @@ class Tour():
 	def assess(self):
 		i = total_area = 0
 		run_time = 0
-		while(i < len(self.path) and run_time < 440):
+		while(i < len(self.path) and run_time < 470):#got to 94 with 600
 			run_time += (self.gps.travel_time(self.start, self.path[i].coords) if not i else self.gps.travel_time(self.path[i-1].coords, self.path[i].coords))
 			run_time += self.path[i].time
 			if (type(self.path[i]) == Fire):
@@ -116,7 +116,7 @@ class Tour():
 
 def swap(fire_tour):
 	tour = fire_tour[:]
-	for i in range(4):
+	for _ in range(2):
 		i1 = random.randint(0, len(fire_tour)-1)
 		i2 = random.randint(0, len(fire_tour)-1)
 		tour[i1], tour[i2] = tour[i2], tour[i1]
@@ -129,12 +129,11 @@ class my_flight_controller(student_base):
 		self.tour = tour
 		self.gps = GPS()
 
-	def message(self, text, i, pt):
-		if type(pt) == Water: print(f'\n({i}) WATER:', text)
-		else: print(f'\n({i}) FIRE:', text)
+	def message(self, text, i, pt_type):
+		print(f'\n({i}) {pt_type}:', text)
 
 	def student_run(self, telemetry, commands):
-		expected_time = 0
+		expected_time = 2
 
 		#~~~~~~~~~SETUP & MOTION~~~~~~~~~
 		def setup():
@@ -145,8 +144,8 @@ class my_flight_controller(student_base):
 			self.takeoff()
 			time.sleep(3)
 
-		def go_to(pt, i):
-			lat, lon, = pt.coords.y, pt.coords.x
+		def go_to(coords, i, pt_type):
+			lat, lon, = coords.y, coords.x
 			self.goto(lat, lon, 10)
 			time.sleep(1)
 			tol = 0.0001
@@ -154,9 +153,9 @@ class my_flight_controller(student_base):
 			while err > tol:
 				time.sleep(2)
 				err = np.linalg.norm([lat - telemetry['latitude'], lon - telemetry['longitude']])
-			self.message(f'arrived at ({round(lon,4)}, {round(lat,4)})', i, pt)
+			self.message(f'arrived at ({round(lon,4)}, {round(lat,4)})', i, pt_type)
 		
-		def wait_over_fire(pt, next_fire, history):
+		def wait_over_fire(pt, next_fire, history,i):
 			while	(
 					history[-1] >= pt.target*1.1 and 
 					history[-1] - history[-3] >= 1e-10 and 
@@ -167,16 +166,23 @@ class my_flight_controller(student_base):
 				history.append(curr_area)		
 				print('\nCurrent area:', curr_area)
 				print('Target:', pt.target * 1e10)
-			final_area = round(telemetry["fire_polygons"][next_fire].area*1e10, 2)
-			print(f'\n~~~Suppressed fire, new area: {final_area}~~~\n\n')
-			time.sleep(4)
+			try:
+				go_to(telemetry['fire_polygons'][next_fire].centroid, i, 'NEW CENTROID')
+			except:
+				print('Centroid not found')
+			else:
+				final_area = round(telemetry["fire_polygons"][next_fire].area*1e10, 2)
+				print(f'\n~~~Suppressed fire, new area: {final_area}~~~\n\n')
+			time.sleep(2.8)
+			
 
 		def wait_over_water(pt):
-			target = (pt.target/60)*100 - 5
-			while telemetry['water_pct_remaining'] <= target: time.sleep(2)
+			target = (pt.target/60)*100 - 10
+			while telemetry['water_pct_remaining'] <= target: time.sleep(4)
 			print('\n~~~Replenished water~~~\n\n')
 
-		def time_update(pt):
+		def time_update(pt, detour):
+			if detour: return 0
 			nonlocal expected_time
 			transit_time = self.gps.travel_time(Point([telemetry['longitude'], telemetry['latitude']]), pt.coords)
 			wait_time = pt.time
@@ -186,18 +192,22 @@ class my_flight_controller(student_base):
 
 		def execute_tour():
 			nonlocal expected_time
+			detour = False
+			predicted_tank = 0
+			predicted_suppressed = 0
 			time.sleep(2)
 			
 			i = 0
 			command_count = 1
 			while(i < len(self.tour)):
 				print(f'================= COMMAND #{command_count} =================')
+				if detour: print('~~~DETOUR~~~')
 				pt = self.tour[i]
-				command_time = time_update(pt)
+				command_time = time_update(pt, detour)
 				lat, lon = round(pt.coords.y,4), round(pt.coords.x,4)
 
 				if type(pt) == Fire:
-					next_fire = next((i for i,f in enumerate(telemetry['fire_polygons']) if f.contains(pt.coords)), None)
+					next_fire = next((i for i,f in enumerate(telemetry['fire_polygons']) if f.minimum_rotated_rectangle.contains(pt.coords)), None)
 					if not next_fire:
 						print('~~~Skipped~~~\n\n')
 						expected_time -= command_time
@@ -206,13 +216,36 @@ class my_flight_controller(student_base):
 						continue
 					start_area = telemetry["fire_polygons"][next_fire].area
 					history = 3*[start_area]
-					self.message(f'enroute to #{next_fire} / AREA = {round(start_area*1e10,2)} / ({lon}, {lat})', i, pt)
-					go_to(pt, i)
-					wait_over_fire(pt, next_fire, history)
+					self.message(f'enroute to #{next_fire} / AREA = {round(start_area*1e10,2)} / ({lon}, {lat})', i, 'FIRE')
+
+					go_to(pt.coords, i, 'FIRE')
+					# # If tank is empty, get some water and return
+					# if not detour and telemetry['water_pct_remaining'] < 12:
+					# 	self.tour.insert(i,Water(self.gps.nearest_water_pt(Point([telemetry['longitude'], telemetry['latitude']])), 60-.6*self.telemetry['water_pct_remaining'], 60))
+					# 	detour = True
+					# 	continue
+					wait_over_fire(pt, next_fire, history, i)
+					predicted_tank -= pt.time
+					predicted_suppressed += pt.value()
+					print('Predicted tank', predicted_tank)
+					print('Predicted suppressed', round(((predicted_suppressed)/13003)*100))
+					detour = False
 				elif type(pt) == Water:
-					self.message(f'enroute to ({lon}, {lat})', i, pt)
-					go_to(pt, i)
+					#If seeking water but already have a little left, spend it on a fire
+					# if self.telemetry['water_pct_remaining'] >= 17:
+					# 	self.tour.insert(i,self.tour[i+1])
+					# 	detour = True
+					# 	continue
+					# #If coming for water but already full, skip
+					# if self.telemetry['water_pct_remaining'] > 50:
+					# 	i+=1
+					# 	continue
+					self.message(f'enroute to ({lon}, {lat})', i, 'WATER')
+					go_to(pt.coords, i, 'WATER')
 					wait_over_water(pt)
+					predicted_tank = pt.target
+					print('Predicted tank:', predicted_tank)
+					detour = False
 				i+=1
 				command_count += 1
 
@@ -227,23 +260,27 @@ class my_flight_controller(student_base):
 		print("Landed")
 
 if __name__ == "__main__":
-	temp = 3000
+	# temp = 6000
+	temp = 20
 	best = Tour()
 	best_eval = best.with_water().assess()
 	print("BEST_EVAL", best_eval)
 	curr, curr_eval = best, best_eval
-	for i in range(1000):
+	for i in range(2000):
 		candidate = swap(best.path)
 		cand_eval = candidate.with_water().assess()
 		if cand_eval > best_eval:
 			best, best_eval = candidate, cand_eval
 			print(i, best_eval)
-		diff = (cand_eval - curr_eval)/70
+		diff = (cand_eval - curr_eval)
 		te = temp / float(i+1)
-		metropolis = math.exp(-diff / te)
-		if diff > 0 or random.uniform(0,1) > metropolis:
+		metropolis = math.exp(-abs(diff / temp))
+		temp *= .995
+		if diff > 0 or metropolis > random.random():
 			curr, curr_eval = candidate, cand_eval
+		if i % 1000 == 0: print(i)
 	print('NEW BEST EVAL', best_eval)
+	# print(best.with_water().assess())
 	my_flight_controller(best.with_water().path).run()
 
 
